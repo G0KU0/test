@@ -19,109 +19,114 @@ bot.once('ready', () => {
 });
 
 bot.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand()) return;
+    // Globális hibakezelés az interakcióhoz
+    try {
+        if (!interaction.isChatInputCommand()) return;
 
-    if (interaction.commandName === 'verify') {
-        const url = interaction.options.getString('url');
-        await interaction.deferReply();
-
-        // 1. URL Elemzése
-        const info = sheerIdClient.extractInfo(url);
-        if (!info) {
-            return interaction.editReply("❌ **Hiba:** Nem érvényes vagy nem támogatott link.");
-        }
-
-        const statusEmbed = new EmbedBuilder()
-            .setTitle("⚙️ PROCESSING...")
-            .setDescription(`**PHASE 1:** Inicializálás...\n**ID:** \`${info.id}\` (${info.type})`)
-            .setColor(0x0099FF);
-
-        await interaction.editReply({ embeds: [statusEmbed] });
-
-        try {
-            let verificationId = info.id;
-            let currentStep = 'collectStudentPersonalInfo'; // Alapértelmezett
-
-            // 2. Session indítása (Ha Program ID)
-            if (info.type === 'PROGRAM') {
-                const sessionData = await sheerIdClient.initiateSession(info.id);
-                verificationId = sessionData.id;
-                currentStep = sessionData.currentStep; // Megnézzük, mit kér a rendszer
-            } else {
-                // Ha már Verification ID van, lekérjük az állapotot
-                const status = await sheerIdClient.getStatus(verificationId);
-                if (status) currentStep = status.currentStep;
-            }
-
-            // Profil generálás (szükség lehet rá később)
-            const profile = studentGen.generateProfile();
-            let apiResponse = null;
-
-            // --- DINAMIKUS LÉPÉS KEZELÉS ---
+        if (interaction.commandName === 'verify') {
+            const url = interaction.options.getString('url');
             
-            // Ha a rendszer adatokat kér (Név, Email...)
-            if (currentStep === 'collectStudentPersonalInfo') {
-                const step2Embed = new EmbedBuilder(statusEmbed.data)
-                    .setDescription(`**PHASE 2:** Adatok beküldése...\n**Session:** \`${verificationId}\`\n**Step:** ${currentStep}`)
-                    .setColor(0xFFA500);
-                await interaction.editReply({ embeds: [step2Embed] });
-
-                apiResponse = await sheerIdClient.submitStudentInfo(verificationId, profile);
-            } 
-            // Ha MÁR a doksi feltöltésnél tartunk (vagy az volt az első lépés)
-            else if (currentStep === 'docUpload') {
-                console.log("Skipping Info Submit -> Jumping to Doc Upload");
-                // Szimulálunk egy választ, hogy a lenti logika fusson le
-                apiResponse = { currentStep: 'docUpload' }; 
-            }
-            
-            // --- AUTO-BYPASS LOGIKA ---
-            // Ellenőrizzük az API választ VAGY az eredeti lépést
-            if (apiResponse?.currentStep === 'docUpload') {
-                const bypassEmbed = new EmbedBuilder(statusEmbed.data)
-                    .setDescription(`**⚠️ DOKUMENTUM SZÜKSÉGES**\n\n⚙️ **AUTO-BYPASS:** Aktiválva...\nGenerált token beküldése...`)
-                    .setColor(0xFF00FF);
-                
-                await interaction.editReply({ embeds: [bypassEmbed] });
-                await new Promise(r => setTimeout(r, 2000));
-
-                apiResponse = await sheerIdClient.bypassDocumentStep(verificationId);
+            // JAVÍTÁS: Védett válasz indítás
+            try {
+                await interaction.deferReply();
+            } catch (err) {
+                console.log("⚠️ A parancs időtúllépés miatt lejárt (Bot ébresztése folyamatban...)");
+                return; // Ha lejárt a token, kilépünk, nem omlunk össze
             }
 
-            // 3. Végeredmény
-            if (apiResponse?.status === 'COMPLETE' || apiResponse?.currentStep === 'success') {
-                const successEmbed = new EmbedBuilder()
-                    .setTitle("✅ SIKERES VERIFIKÁCIÓ")
-                    .setDescription(`${config.banner}\n\n**Email:** \`${profile.email}\``)
-                    .setColor(0x00FF00);
-                
-                if (apiResponse.redirectUrl) {
-                    successEmbed.addFields({ name: '🎁 KUPON LINK', value: `[KATTINTS IDE](${apiResponse.redirectUrl})` });
-                } else if (apiResponse.rewardCode) {
-                    successEmbed.addFields({ name: '🔑 KÓD', value: `\`${apiResponse.rewardCode}\`` });
+            // 1. URL Elemzése
+            const info = sheerIdClient.extractInfo(url);
+            if (!info) {
+                return interaction.editReply("❌ **Hiba:** Nem érvényes vagy nem támogatott link.");
+            }
+
+            const statusEmbed = new EmbedBuilder()
+                .setTitle("⚙️ PROCESSING...")
+                .setDescription(`**PHASE 1:** Inicializálás...\n**ID:** \`${info.id}\` (${info.type})`)
+                .setColor(0x0099FF);
+
+            await interaction.editReply({ embeds: [statusEmbed] });
+
+            try {
+                let verificationId = info.id;
+                let currentStep = 'collectStudentPersonalInfo';
+
+                // 2. Session indítása
+                if (info.type === 'PROGRAM') {
+                    const sessionData = await sheerIdClient.initiateSession(info.id);
+                    verificationId = sessionData.id;
+                    currentStep = sessionData.currentStep;
+                } else {
+                    const status = await sheerIdClient.getStatus(verificationId);
+                    if (status) currentStep = status.currentStep;
+                }
+
+                const profile = studentGen.generateProfile();
+                let apiResponse = null;
+
+                // --- LOGIKA ---
+                if (currentStep === 'collectStudentPersonalInfo') {
+                    const step2Embed = new EmbedBuilder(statusEmbed.data)
+                        .setDescription(`**PHASE 2:** Adatok beküldése...\n**Session:** \`${verificationId}\`\n**Step:** ${currentStep}`)
+                        .setColor(0xFFA500);
+                    await interaction.editReply({ embeds: [step2Embed] });
+
+                    apiResponse = await sheerIdClient.submitStudentInfo(verificationId, profile);
+                } 
+                else if (currentStep === 'docUpload') {
+                    apiResponse = { currentStep: 'docUpload' }; 
                 }
                 
-                await interaction.editReply({ embeds: [successEmbed] });
-            
-            } else {
-                const failReason = apiResponse?.message || apiResponse?.systemErrorMessage || "Ismeretlen hiba";
-                await interaction.editReply({ 
-                    embeds: [new EmbedBuilder()
-                        .setTitle("❌ ELUTASÍTVA")
-                        .setDescription(`Indok: ${failReason}\n\nLépés: ${apiResponse?.currentStep || 'N/A'}`)
-                        .setColor(0xFF0000)
-                    ] 
-                });
-            }
+                // --- AUTO-BYPASS ---
+                if (apiResponse?.currentStep === 'docUpload') {
+                    const bypassEmbed = new EmbedBuilder(statusEmbed.data)
+                        .setDescription(`**⚠️ DOKUMENTUM SZÜKSÉGES**\n\n⚙️ **AUTO-BYPASS:** Aktiválva...\nGenerált token beküldése...`)
+                        .setColor(0xFF00FF);
+                    
+                    await interaction.editReply({ embeds: [bypassEmbed] });
+                    await new Promise(r => setTimeout(r, 2000));
 
-        } catch (error) {
-            console.error(error);
-            const errEmbed = new EmbedBuilder()
-                .setTitle("CRITICAL ERROR")
-                .setDescription(`Hiba történt: ${error.message}`)
-                .setColor(0x8B0000);
-            await interaction.editReply({ embeds: [errEmbed] });
+                    apiResponse = await sheerIdClient.bypassDocumentStep(verificationId);
+                }
+
+                // 3. Eredmény
+                if (apiResponse?.status === 'COMPLETE' || apiResponse?.currentStep === 'success') {
+                    const successEmbed = new EmbedBuilder()
+                        .setTitle("✅ SIKERES VERIFIKÁCIÓ")
+                        .setDescription(`${config.banner}\n\n**Email:** \`${profile.email}\``)
+                        .setColor(0x00FF00);
+                    
+                    if (apiResponse.redirectUrl) {
+                        successEmbed.addFields({ name: '🎁 KUPON LINK', value: `[KATTINTS IDE](${apiResponse.redirectUrl})` });
+                    } else if (apiResponse.rewardCode) {
+                        successEmbed.addFields({ name: '🔑 KÓD', value: `\`${apiResponse.rewardCode}\`` });
+                    }
+                    
+                    await interaction.editReply({ embeds: [successEmbed] });
+                
+                } else {
+                    const failReason = apiResponse?.message || apiResponse?.systemErrorMessage || "Ismeretlen hiba";
+                    await interaction.editReply({ 
+                        embeds: [new EmbedBuilder()
+                            .setTitle("❌ ELUTASÍTVA")
+                            .setDescription(`Indok: ${failReason}\n\nLépés: ${apiResponse?.currentStep || 'N/A'}`)
+                            .setColor(0xFF0000)
+                        ] 
+                    });
+                }
+
+            } catch (error) {
+                console.error(error);
+                const errEmbed = new EmbedBuilder()
+                    .setTitle("CRITICAL ERROR")
+                    .setDescription(`Hiba történt: ${error.message}`)
+                    .setColor(0x8B0000);
+                // Csak akkor próbálunk válaszolni, ha még nem járt le a token
+                try { await interaction.editReply({ embeds: [errEmbed] }); } catch (e) {}
+            }
         }
+    } catch (globalError) {
+        console.error("Critical Interaction Error:", globalError);
     }
 });
 
