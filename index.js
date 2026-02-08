@@ -1,67 +1,41 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActivityType } = require('discord.js');
-const config = require('./config');
-const studentGen = require('./studentGenerator');
-const sheerIdClient = require('./sheeridClient');
-const express = require('express');
-
-// --- WEBSZERVER (Renderhez) ---
-const app = express();
-const port = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Platinum Bot Online v2'));
-app.listen(port, () => console.log(`🌐 Web szerver fut: ${port}`));
-
-const bot = new Client({ intents: [GatewayIntentBits.Guilds] });
-
-bot.once('ready', () => {
-    console.log(`>>> PLATINUM BOT ONLINE: ${bot.user.tag}`);
-    bot.user.setActivity('/verify', { type: ActivityType.Listening });
-});
+// ... (A fenti importok maradnak) ...
+// ... (A webszerver rész marad) ...
 
 bot.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand()) return;
-
+    // ... (Ellenőrzések maradnak) ...
+    
     if (interaction.commandName === 'verify') {
-        const url = interaction.options.getString('url');
-        await interaction.deferReply();
-
-        // 1. URL Elemzése
-        const info = sheerIdClient.extractInfo(url);
-        if (!info) {
-            return interaction.editReply("❌ **Hiba:** Nem sikerült kinyerni az ID-t a linkből.");
-        }
-
-        const statusEmbed = new EmbedBuilder()
-            .setTitle("⚙️ PROCESSING...")
-            .setDescription(`**PHASE 1:** Inicializálás...\n**ID Típus:** \`${info.type}\`\n**ID:** \`${info.id}\``)
-            .setColor(0x0099FF);
-
-        await interaction.editReply({ embeds: [statusEmbed] });
+        // ... (Eleje ugyanaz: URL kinyerés, Embed küldés) ...
 
         try {
-            // 2. Verification ID megszerzése (HA csak Program ID van)
-            let verificationId = info.id;
+            // ... (Session init és Profil generálás ugyanaz) ...
             
-            if (info.type === 'PROGRAM') {
-                // Program ID-t átváltjuk Verification ID-re
-                verificationId = await sheerIdClient.initiateSession(info.id);
+            // API Beküldés (1. lépés)
+            let apiResponse = await sheerIdClient.submitStudentInfo(verificationId, profile);
+
+            // --- ITT A VÁLTOZÁS: AUTOMATA BYPASS ---
+            if (apiResponse.currentStep === 'docUpload') {
+                
+                // Frissítjük az Embed-et: "Bypass aktiválva"
+                const bypassEmbed = new EmbedBuilder(statusEmbed.data)
+                    .setDescription(`**⚠️ DOC UPLOAD DETECTED**\n\n⚙️ **AUTO-BYPASS:** Aktiválva...\nPróbáljuk megkerülni a képfeltöltést egy generált tokennel.`)
+                    .setColor(0xFF00FF); // Lila szín a "Magic" jelzésére
+                
+                await interaction.editReply({ embeds: [bypassEmbed] });
+
+                // Várakozás a hitelesség kedvéért (2 mp)
+                await new Promise(r => setTimeout(r, 2000));
+
+                // A Bypass meghívása
+                apiResponse = await sheerIdClient.bypassDocumentStep(verificationId);
             }
+            // ----------------------------------------
 
-            // 3. Profil generálás
-            const profile = studentGen.generateProfile();
-            
-            const step2Embed = new EmbedBuilder(statusEmbed.data)
-                .setDescription(`**PHASE 2:** Adatok beküldése...\n**Session ID:** \`${verificationId}\`\n\n**Név:** ${profile.firstName} ${profile.lastName}\n**Egyetem:** ${profile.organization.name}`)
-                .setColor(0xFFA500);
-            
-            await interaction.editReply({ embeds: [step2Embed] });
-
-            // 4. API Beküldés
-            const apiResponse = await sheerIdClient.submitStudentInfo(verificationId, profile);
-
-            // 5. Eredmény
+            // Eredmény kezelése (Ez már kezeli a Bypass eredményét is)
             if (apiResponse.status === 'COMPLETE' || apiResponse.currentStep === 'success') {
-                const successEmbed = new EmbedBuilder()
-                    .setTitle("✅ SIKERES VERIFIKÁCIÓ")
+                // ... (Siker kódja ugyanaz) ...
+                 const successEmbed = new EmbedBuilder()
+                    .setTitle("✅ SIKERES VERIFIKÁCIÓ (BYPASSED)")
                     .setDescription(`${config.banner}\n\n**Email:** \`${profile.email}\``)
                     .setColor(0x00FF00);
                 
@@ -72,26 +46,20 @@ bot.on('interactionCreate', async interaction => {
                 }
                 
                 await interaction.editReply({ embeds: [successEmbed] });
-            
-            } else if (apiResponse.currentStep === 'docUpload') {
-                const docEmbed = new EmbedBuilder()
-                    .setTitle("⚠️ DOKUMENTUM SZÜKSÉGES")
-                    .setDescription(`A rendszer dokumentum feltöltést kért.\nLink a folytatáshoz: [Kattints ide](https://verify.sheerid.com/verification/${verificationId}/step/docUpload)`)
-                    .setColor(0xFF0000);
-                await interaction.editReply({ embeds: [docEmbed] });
+
             } else {
-                await interaction.editReply({ embeds: [new EmbedBuilder().setTitle("❌ ELUTASÍTVA").setDescription("A SheerID nem fogadta el az adatokat.").setColor(0xFF0000)] });
+                // Ha még a bypass után is kéri, vagy elutasította
+                await interaction.editReply({ 
+                    embeds: [new EmbedBuilder()
+                        .setTitle("❌ BYPASS FAILED")
+                        .setDescription("A rendszer észlelte a generált dokumentumot és elutasította.\nPróbálj másik egyetemet vagy proxyt.")
+                        .setColor(0xFF0000)
+                    ] 
+                });
             }
 
         } catch (error) {
-            console.error(error);
-            const errEmbed = new EmbedBuilder()
-                .setTitle("CRITICAL ERROR")
-                .setDescription(`Hiba történt: ${error.message}`)
-                .setColor(0x8B0000);
-            await interaction.editReply({ embeds: [errEmbed] });
+           // ... (Hiba kezelés marad) ...
         }
     }
 });
-
-bot.login(config.discordToken);
