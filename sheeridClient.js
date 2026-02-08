@@ -1,13 +1,13 @@
 const axios = require('axios');
 const config = require('./config');
 const { HttpsProxyAgent } = require('https-proxy-agent');
-const FormData = require('form-data'); // Ez kell a fájlfeltöltéshez
+const FormData = require('form-data');
 
 class SheerIDClient {
     constructor() {
         const axiosConfig = {
             baseURL: config.apiBase,
-            timeout: 45000, // Növelt timeout a feltöltéshez
+            timeout: 45000,
             headers: {
                 'User-Agent': config.userAgent,
                 'Accept': 'application/json, text/plain, */*',
@@ -56,6 +56,7 @@ class SheerIDClient {
             });
             return response.data.id;
         } catch (error) {
+            console.error("Session Init Hiba:", error.response?.data);
             throw new Error("Nem sikerült elindítani a verifikációt.");
         }
     }
@@ -78,48 +79,37 @@ class SheerIDClient {
             );
             return response.data;
         } catch (error) {
-            const errorMsg = error.response?.data?.message || error.message;
-            throw new Error(errorMsg);
+            // ITT A JAVÍTÁS: Kiírjuk a pontos hibaüzenetet a szerverről
+            const serverMsg = JSON.stringify(error.response?.data) || error.message;
+            console.error(`API Hiba Részletek (${verificationId}):`, serverMsg);
+            throw new Error(`SheerID Hiba: ${serverMsg}`);
         }
     }
 
-    // --- AZ ÚJ "BYPASS" FUNKCIÓ ---
     async bypassDocumentStep(verificationId) {
         try {
             console.log(`⚡ BYPASS KÍSÉRLET: ${verificationId}`);
-
-            // 1. Generálunk egy 1x1 pixeles "kamu" képet (vagy zajt)
-            // Ez egy minimális valid JPEG header
             const fakeImageBuffer = Buffer.from(
                 '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=',
                 'base64'
             );
 
-            // 2. Form Data összeállítása
             const form = new FormData();
             form.append('document', fakeImageBuffer, {
                 filename: 'student_id_card.jpg',
                 contentType: 'image/jpeg',
             });
 
-            // 3. Beküldés a SheerID-nek
-            // Fontos: A SheerID néha a /step/docUpload végpontot használja
             const response = await this.client.post(
                 `/verification/${verificationId}/step/docUpload`,
                 form,
-                {
-                    headers: {
-                        ...form.getHeaders(), // Ez nagyon fontos a multipart miatt
-                    }
-                }
+                { headers: { ...form.getHeaders() } }
             );
 
             return response.data;
-
         } catch (error) {
             console.error("Bypass Failed:", error.message);
-            // Ha 400-as hiba, az azt jelenti, hogy az AI felismerte, hogy kamu a kép
-            return { status: 'FAILED', message: error.response?.data?.message || 'AI Detection Triggered' };
+            return { status: 'FAILED', message: 'Bypass sikertelen.' };
         }
     }
 }
