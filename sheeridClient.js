@@ -1,12 +1,13 @@
 const axios = require('axios');
 const config = require('./config');
 const { HttpsProxyAgent } = require('https-proxy-agent');
+const FormData = require('form-data'); // Ez kell a fájlfeltöltéshez
 
 class SheerIDClient {
     constructor() {
         const axiosConfig = {
             baseURL: config.apiBase,
-            timeout: 30000,
+            timeout: 45000, // Növelt timeout a feltöltéshez
             headers: {
                 'User-Agent': config.userAgent,
                 'Accept': 'application/json, text/plain, */*',
@@ -27,53 +28,40 @@ class SheerIDClient {
 
     extractInfo(url) {
         try {
-            // Tisztítás
             const cleanUrl = url.trim();
             const urlObj = new URL(cleanUrl);
             
-            // 1. Ha már van Verification ID (ritka)
             if (urlObj.searchParams.has('verificationId')) {
                 return { id: urlObj.searchParams.get('verificationId'), type: 'VERIFICATION' };
             }
             
-            // 2. Program ID keresése (Gyakori: /verify/PROGRAM_ID)
             const pathParts = urlObj.pathname.split('/');
             const verifyIndex = pathParts.indexOf('verify');
             
             if (verifyIndex !== -1 && pathParts[verifyIndex + 1]) {
                 const id = pathParts[verifyIndex + 1];
-                // Ellenőrizzük, hogy nem üres-e
-                if (id && id.length > 5) {
-                    return { id: id, type: 'PROGRAM' };
-                }
+                if (id && id.length > 5) return { id: id, type: 'PROGRAM' };
             }
         } catch (e) {
-            console.error("URL Parsing Error:", e.message);
             return null;
         }
         return null;
     }
 
-    // ÚJ: Munkamenet indítása (Program ID -> Verification ID)
     async initiateSession(programId) {
         try {
-            console.log(`⏳ Session indítása Program ID-vel: ${programId}`);
             const response = await this.client.post('/verification', {
                 programId: programId,
                 trackingId: null
             });
-            console.log(`✅ Session létrehozva. Verification ID: ${response.data.id}`);
-            return response.data.id; // Ez az új Verification ID
+            return response.data.id;
         } catch (error) {
-            console.error("Session Init Error:", error.response?.data || error.message);
-            throw new Error("Nem sikerült elindítani a verifikációt (Hibás Program ID?).");
+            throw new Error("Nem sikerült elindítani a verifikációt.");
         }
     }
 
     async submitStudentInfo(verificationId, profile) {
         try {
-            if (!verificationId) throw new Error("Hiányzó Verification ID!");
-
             const payload = {
                 firstName: profile.firstName,
                 lastName: profile.lastName,
@@ -91,8 +79,47 @@ class SheerIDClient {
             return response.data;
         } catch (error) {
             const errorMsg = error.response?.data?.message || error.message;
-            console.error(`API Hiba (${verificationId}):`, error.response?.status, errorMsg);
             throw new Error(errorMsg);
+        }
+    }
+
+    // --- AZ ÚJ "BYPASS" FUNKCIÓ ---
+    async bypassDocumentStep(verificationId) {
+        try {
+            console.log(`⚡ BYPASS KÍSÉRLET: ${verificationId}`);
+
+            // 1. Generálunk egy 1x1 pixeles "kamu" képet (vagy zajt)
+            // Ez egy minimális valid JPEG header
+            const fakeImageBuffer = Buffer.from(
+                '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=',
+                'base64'
+            );
+
+            // 2. Form Data összeállítása
+            const form = new FormData();
+            form.append('document', fakeImageBuffer, {
+                filename: 'student_id_card.jpg',
+                contentType: 'image/jpeg',
+            });
+
+            // 3. Beküldés a SheerID-nek
+            // Fontos: A SheerID néha a /step/docUpload végpontot használja
+            const response = await this.client.post(
+                `/verification/${verificationId}/step/docUpload`,
+                form,
+                {
+                    headers: {
+                        ...form.getHeaders(), // Ez nagyon fontos a multipart miatt
+                    }
+                }
+            );
+
+            return response.data;
+
+        } catch (error) {
+            console.error("Bypass Failed:", error.message);
+            // Ha 400-as hiba, az azt jelenti, hogy az AI felismerte, hogy kamu a kép
+            return { status: 'FAILED', message: error.response?.data?.message || 'AI Detection Triggered' };
         }
     }
 }
