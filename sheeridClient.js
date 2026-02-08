@@ -48,16 +48,26 @@ class SheerIDClient {
         return null;
     }
 
+    // Módosítva: Visszaadja a teljes objektumot, nem csak az ID-t
     async initiateSession(programId) {
         try {
             const response = await this.client.post('/verification', {
                 programId: programId,
                 trackingId: null
             });
-            return response.data.id;
+            return response.data; // { id: "...", currentStep: "..." }
         } catch (error) {
             console.error("Session Init Hiba:", error.response?.data);
             throw new Error("Nem sikerült elindítani a verifikációt.");
+        }
+    }
+
+    async getStatus(verificationId) {
+        try {
+            const response = await this.client.get(`/verification/${verificationId}`);
+            return response.data;
+        } catch (error) {
+            return null;
         }
     }
 
@@ -79,9 +89,14 @@ class SheerIDClient {
             );
             return response.data;
         } catch (error) {
-            // ITT A JAVÍTÁS: Kiírjuk a pontos hibaüzenetet a szerverről
+            // Ha 'invalidStep' hibát kapunk, lekérjük az aktuális állapotot
+            if (error.response?.data?.errorIds?.includes('invalidStep')) {
+                console.log("⚠️ Invalid Step detected, fetching current status...");
+                const status = await this.getStatus(verificationId);
+                return status; // Visszaadjuk az aktuális állapotot, hogy az index.js kezelni tudja
+            }
+            
             const serverMsg = JSON.stringify(error.response?.data) || error.message;
-            console.error(`API Hiba Részletek (${verificationId}):`, serverMsg);
             throw new Error(`SheerID Hiba: ${serverMsg}`);
         }
     }
