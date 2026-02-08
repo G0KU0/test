@@ -4,24 +4,14 @@ const studentGen = require('./studentGenerator');
 const sheerIdClient = require('./sheeridClient');
 const express = require('express');
 
-// --- 1. WEBSZERVER (Renderhez kötelező) ---
+// --- 1. WEBSZERVER ---
 const app = express();
 const port = process.env.PORT || 3000;
+app.get('/', (req, res) => { res.send('Platinum Bot Online - Status: ACTIVE'); });
+app.listen(port, () => { console.log(`🌐 Web szerver elindult a ${port}-es porton.`); });
 
-app.get('/', (req, res) => {
-    res.send('Platinum Bot Online - Status: ACTIVE');
-});
-
-app.listen(port, () => {
-    console.log(`🌐 Web szerver elindult a ${port}-es porton.`);
-});
-
-// --- 2. BOT LÉTREHOZÁSA (Ez hiányzott!) ---
-const bot = new Client({
-    intents: [GatewayIntentBits.Guilds]
-});
-
-// --- 3. ESEMÉNYEK ---
+// --- 2. BOT ---
+const bot = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 bot.once('ready', () => {
     console.log(`>>> PLATINUM BOT ONLINE: ${bot.user.tag}`);
@@ -33,8 +23,6 @@ bot.on('interactionCreate', async interaction => {
 
     if (interaction.commandName === 'verify') {
         const url = interaction.options.getString('url');
-        
-        // Timeout elkerülése
         await interaction.deferReply();
 
         // 1. URL Elemzése
@@ -51,42 +39,57 @@ bot.on('interactionCreate', async interaction => {
         await interaction.editReply({ embeds: [statusEmbed] });
 
         try {
-            // 2. Session kezelés
             let verificationId = info.id;
+            let currentStep = 'collectStudentPersonalInfo'; // Alapértelmezett
+
+            // 2. Session indítása (Ha Program ID)
             if (info.type === 'PROGRAM') {
-                verificationId = await sheerIdClient.initiateSession(info.id);
+                const sessionData = await sheerIdClient.initiateSession(info.id);
+                verificationId = sessionData.id;
+                currentStep = sessionData.currentStep; // Megnézzük, mit kér a rendszer
+            } else {
+                // Ha már Verification ID van, lekérjük az állapotot
+                const status = await sheerIdClient.getStatus(verificationId);
+                if (status) currentStep = status.currentStep;
             }
 
-            // 3. Profil generálás
+            // Profil generálás (szükség lehet rá később)
             const profile = studentGen.generateProfile();
-            
-            const step2Embed = new EmbedBuilder(statusEmbed.data)
-                .setDescription(`**PHASE 2:** Adatok beküldése...\n**Session:** \`${verificationId}\`\n\n**Név:** ${profile.firstName} ${profile.lastName}\n**Egyetem:** ${profile.organization.name}`)
-                .setColor(0xFFA500);
-            
-            await interaction.editReply({ embeds: [step2Embed] });
+            let apiResponse = null;
 
-            // 4. API Beküldés
-            let apiResponse = await sheerIdClient.submitStudentInfo(verificationId, profile);
+            // --- DINAMIKUS LÉPÉS KEZELÉS ---
+            
+            // Ha a rendszer adatokat kér (Név, Email...)
+            if (currentStep === 'collectStudentPersonalInfo') {
+                const step2Embed = new EmbedBuilder(statusEmbed.data)
+                    .setDescription(`**PHASE 2:** Adatok beküldése...\n**Session:** \`${verificationId}\`\n**Step:** ${currentStep}`)
+                    .setColor(0xFFA500);
+                await interaction.editReply({ embeds: [step2Embed] });
 
+                apiResponse = await sheerIdClient.submitStudentInfo(verificationId, profile);
+            } 
+            // Ha MÁR a doksi feltöltésnél tartunk (vagy az volt az első lépés)
+            else if (currentStep === 'docUpload') {
+                console.log("Skipping Info Submit -> Jumping to Doc Upload");
+                // Szimulálunk egy választ, hogy a lenti logika fusson le
+                apiResponse = { currentStep: 'docUpload' }; 
+            }
+            
             // --- AUTO-BYPASS LOGIKA ---
-            if (apiResponse.currentStep === 'docUpload') {
+            // Ellenőrizzük az API választ VAGY az eredeti lépést
+            if (apiResponse?.currentStep === 'docUpload') {
                 const bypassEmbed = new EmbedBuilder(statusEmbed.data)
                     .setDescription(`**⚠️ DOKUMENTUM SZÜKSÉGES**\n\n⚙️ **AUTO-BYPASS:** Aktiválva...\nGenerált token beküldése...`)
-                    .setColor(0xFF00FF); // Lila
+                    .setColor(0xFF00FF);
                 
                 await interaction.editReply({ embeds: [bypassEmbed] });
-
-                // Kis szünet a hitelességért
                 await new Promise(r => setTimeout(r, 2000));
 
-                // Bypass meghívása
                 apiResponse = await sheerIdClient.bypassDocumentStep(verificationId);
             }
-            // -------------------------
 
-            // 5. Végeredmény kiértékelése
-            if (apiResponse.status === 'COMPLETE' || apiResponse.currentStep === 'success') {
+            // 3. Végeredmény
+            if (apiResponse?.status === 'COMPLETE' || apiResponse?.currentStep === 'success') {
                 const successEmbed = new EmbedBuilder()
                     .setTitle("✅ SIKERES VERIFIKÁCIÓ")
                     .setDescription(`${config.banner}\n\n**Email:** \`${profile.email}\``)
@@ -101,12 +104,11 @@ bot.on('interactionCreate', async interaction => {
                 await interaction.editReply({ embeds: [successEmbed] });
             
             } else {
-                // Ha a bypass után is sikertelen
-                const failReason = apiResponse.message || "A SheerID elutasította az adatokat.";
+                const failReason = apiResponse?.message || apiResponse?.systemErrorMessage || "Ismeretlen hiba";
                 await interaction.editReply({ 
                     embeds: [new EmbedBuilder()
                         .setTitle("❌ ELUTASÍTVA")
-                        .setDescription(`Indok: ${failReason}\n\nTipp: Próbálj másik proxyt vagy egyetemet.`)
+                        .setDescription(`Indok: ${failReason}\n\nLépés: ${apiResponse?.currentStep || 'N/A'}`)
                         .setColor(0xFF0000)
                     ] 
                 });
